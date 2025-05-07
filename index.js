@@ -199,12 +199,21 @@ io.on('connection', (socket) => {
                               gameRoom.readyPlayers.push(socket.id);
                         }
 
+                        // Log the ready players and their IDs for debugging
                         console.log(
                               `Game ${gameCode} ready players: ${gameRoom.readyPlayers.length}/${gameRoom.clientId ? 2 : 1}`
                         );
+                        console.log(`Ready players: ${JSON.stringify(gameRoom.readyPlayers)}`);
+                        console.log(`Host ID: ${gameRoom.hostId}, Client ID: ${gameRoom.clientId}`);
+
+                        // Check if both the host and client are ready
+                        const hostReady = gameRoom.readyPlayers.includes(gameRoom.hostId);
+                        const clientReady = gameRoom.clientId && gameRoom.readyPlayers.includes(gameRoom.clientId);
+
+                        console.log(`Host ready: ${hostReady}, Client ready: ${clientReady}`);
 
                         // If both players are ready, update the game state and notify all players
-                        if (gameRoom.readyPlayers.length === 2) {
+                        if (hostReady && clientReady) {
                               gameRoom.state = GAME_STATES.PLAYING;
                               console.log(`Game ${gameCode} state updated to: ${gameRoom.state}`);
 
