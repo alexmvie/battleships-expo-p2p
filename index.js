@@ -39,8 +39,16 @@ const io = new Server(server, {
       pingTimeout: 60000, // Increase ping timeout
 });
 
-// Store active game rooms
+// Store active game rooms with their state
 const gameRooms = new Map();
+
+// Game states
+const GAME_STATES = {
+      WAITING: 'waiting', // Waiting for second player
+      STARTED: 'started', // Game started, players placing ships
+      PLAYING: 'playing', // Both players ready, game in progress
+      ENDED: 'ended', // Game ended
+};
 
 // Handle socket connections
 io.on('connection', (socket) => {
@@ -65,6 +73,7 @@ io.on('connection', (socket) => {
                   hostId: socket.id,
                   clientId: null,
                   status: 'waiting',
+                  state: GAME_STATES.WAITING,
             });
 
             // Join the socket to the game room
@@ -107,6 +116,12 @@ io.on('connection', (socket) => {
             // Notify both players that the game is ready
             socket.emit('game-joined', { gameCode });
             io.to(gameCode).emit('game-ready', { gameCode });
+
+            // If the game is already in the STARTED state, immediately send the start_game event to the client
+            if (gameRoom.state === GAME_STATES.STARTED) {
+                  console.log(`Game ${gameCode} already started, sending start_game event to new client`);
+                  socket.emit('start_game');
+            }
       });
 
       // Handle game data exchange
@@ -118,8 +133,50 @@ io.on('connection', (socket) => {
             // Special handling for start_game event
             if (gameData.type === 'start_game') {
                   console.log('Received start_game event, broadcasting to room:', gameCode);
+
+                  // Update the game state
+                  const gameRoom = gameRooms.get(gameCode);
+                  if (gameRoom) {
+                        gameRoom.state = GAME_STATES.STARTED;
+                        console.log(`Game ${gameCode} state updated to: ${gameRoom.state}`);
+                  }
+
                   // Broadcast the start_game event to all clients in the room
                   io.to(gameCode).emit('start_game');
+                  return;
+            }
+
+            // Special handling for ready_to_battle event
+            if (gameData.type === 'ready_to_battle') {
+                  console.log('Received ready_to_battle event from:', socket.id);
+
+                  // Update the game room to track which players are ready
+                  const gameRoom = gameRooms.get(gameCode);
+                  if (gameRoom) {
+                        // Initialize the readyPlayers array if it doesn't exist
+                        if (!gameRoom.readyPlayers) {
+                              gameRoom.readyPlayers = [];
+                        }
+
+                        // Add this player to the ready players if not already there
+                        if (!gameRoom.readyPlayers.includes(socket.id)) {
+                              gameRoom.readyPlayers.push(socket.id);
+                        }
+
+                        console.log(
+                              `Game ${gameCode} ready players: ${gameRoom.readyPlayers.length}/${gameRoom.clientId ? 2 : 1}`
+                        );
+
+                        // If both players are ready, update the game state and notify all players
+                        if (gameRoom.readyPlayers.length === 2) {
+                              gameRoom.state = GAME_STATES.PLAYING;
+                              console.log(`Game ${gameCode} state updated to: ${gameRoom.state}`);
+
+                              // Broadcast the battle_start event to all clients in the room
+                              io.to(gameCode).emit('battle_start');
+                        }
+                  }
+
                   return;
             }
 
