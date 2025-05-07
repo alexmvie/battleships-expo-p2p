@@ -173,12 +173,17 @@ io.on('connection', (socket) => {
                   // Update the game state
                   const gameRoom = gameRooms.get(gameCode);
                   if (gameRoom) {
-                        gameRoom.state = GAME_STATES.STARTED;
-                        console.log(`Game ${gameCode} state updated to: ${gameRoom.state}`);
-                  }
+                        // Only update state if not already started
+                        if (gameRoom.state !== GAME_STATES.STARTED) {
+                              gameRoom.state = GAME_STATES.STARTED;
+                              console.log(`Game ${gameCode} state updated to: ${gameRoom.state}`);
 
-                  // Broadcast the start_game event to all clients in the room
-                  io.to(gameCode).emit('start_game');
+                              // Broadcast the start_game event to all clients in the room
+                              io.to(gameCode).emit('start_game');
+                        } else {
+                              console.log(`Game ${gameCode} already in STARTED state, ignoring duplicate start_game event`);
+                        }
+                  }
                   return;
             }
 
@@ -197,6 +202,11 @@ io.on('connection', (socket) => {
                         // Add this player to the ready players if not already there
                         if (!gameRoom.readyPlayers.includes(socket.id)) {
                               gameRoom.readyPlayers.push(socket.id);
+                              console.log(`Player ${socket.id} marked as ready in game ${gameCode}`);
+                        } else {
+                              console.log(`Player ${socket.id} already marked as ready in game ${gameCode}`);
+                              // If the player is already ready, just return without further processing
+                              return;
                         }
 
                         // Log the ready players and their IDs for debugging
@@ -213,7 +223,7 @@ io.on('connection', (socket) => {
                         console.log(`Host ready: ${hostReady}, Client ready: ${clientReady}`);
 
                         // If both players are ready, update the game state and notify all players
-                        if (hostReady && clientReady) {
+                        if (hostReady && clientReady && gameRoom.state !== GAME_STATES.PLAYING) {
                               gameRoom.state = GAME_STATES.PLAYING;
                               console.log(`Game ${gameCode} state updated to: ${gameRoom.state}`);
 
