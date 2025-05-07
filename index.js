@@ -113,6 +113,16 @@ io.on('connection', (socket) => {
       socket.on('game-data', (data) => {
             const { gameCode, ...gameData } = data;
 
+            console.log('Received game data:', data);
+
+            // Special handling for start_game event
+            if (gameData.type === 'start_game') {
+                  console.log('Received start_game event, broadcasting to room:', gameCode);
+                  // Broadcast the start_game event to all clients in the room
+                  io.to(gameCode).emit('start_game');
+                  return;
+            }
+
             // Forward the game data to all players in the room except the sender
             socket.to(gameCode).emit('game-data', gameData);
       });
