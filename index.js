@@ -4,307 +4,301 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 
 const app = express();
-
-// Add more detailed CORS configuration
-const corsOptions = {
-      origin: function (origin, callback) {
-            // Allow any origin
-            callback(null, true);
-      },
-      methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
-      credentials: false,
-};
-
-app.use(cors(corsOptions));
-
-// Add CORS headers to all responses
-app.use((req, res, next) => {
-      res.header('Access-Control-Allow-Origin', '*');
-      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      next();
-});
+app.use(cors());
 
 const server = http.createServer(app);
+
+// Configure Socket.io with CORS
 const io = new Server(server, {
       cors: {
-            origin: '*', // In production, you'd want to restrict this
-            methods: ['GET', 'POST', 'OPTIONS'],
-            allowedHeaders: ['Content-Type', 'Authorization'],
-            credentials: false,
+            origin: '*',
+            methods: ['GET', 'POST'],
       },
-      transports: ['websocket', 'polling'],
-      allowEIO3: true, // Allow Engine.IO version 3 client
-      pingTimeout: 60000, // Increase ping timeout
 });
 
-// Store active game rooms with their state
+// Game room map: gameCode -> room data
 const gameRooms = new Map();
 
 // Game states
 const GAME_STATES = {
-      WAITING: 'waiting', // Waiting for second player
-      STARTED: 'started', // Game started, players placing ships
-      PLAYING: 'playing', // Both players ready, game in progress
-      ENDED: 'ended', // Game ended
+      SETUP: 'SETUP',
+      PLACEMENT: 'PLACEMENT',
+      BATTLE: 'BATTLE',
+      FINISHED: 'FINISHED',
 };
 
-// Handle socket connections
+// Root route for testing
+app.get('/', (req, res) => {
+      res.send('Battleship Socket Server is running!');
+});
+
+// Socket.io connection handler
 io.on('connection', (socket) => {
-      console.log(`User connected: ${socket.id}`);
-      console.log('Connection details:', {
-            headers: socket.handshake.headers,
-            address: socket.handshake.address,
-            time: new Date().toISOString(),
-      });
+      console.log('New client connected:', socket.id);
 
-      // Host creates a new game
+      // Handle create-game event
       socket.on('create-game', (gameCode) => {
-            console.log(`Host created game: ${gameCode}`);
-            console.log('Game creation details:', {
-                  socketId: socket.id,
-                  gameCode,
-                  time: new Date().toISOString(),
-            });
+            console.log(`Client ${socket.id} is creating game: ${gameCode}`);
 
-            // Create a new game room with all necessary properties
-            gameRooms.set(gameCode, {
-                  hostId: socket.id,
-                  clientId: null,
-                  status: 'waiting',
-                  state: GAME_STATES.WAITING,
-                  createdAt: new Date(),
-                  hostDisconnected: false,
-                  clientDisconnected: false,
-                  readyPlayers: [],
-            });
+            // Check if game already exists
+            if (gameRooms.has(gameCode)) {
+                  socket.emit('error', { message: 'Game code already in use' });
+                  return;
+            }
+
+            // Create a new game room
+            const gameRoom = {
+                  clients: {},
+                  clientOrder: [],
+                  state: GAME_STATES.SETUP,
+                  currentTurnIndex: 0,
+            };
+
+            // Add the game room to the map
+            gameRooms.set(gameCode, gameRoom);
 
             // Join the socket to the game room
             socket.join(gameCode);
 
-            // Confirm game creation to the host
+            // Notify the client
             socket.emit('game-created', { gameCode });
 
-            // Log the current state of all game rooms
-            console.log('Current game rooms after creation:', [...gameRooms.entries()]);
+            console.log(`Game ${gameCode} created by ${socket.id}`);
       });
 
-      // Client joins an existing game
+      // Handle join-game event
       socket.on('join-game', (gameCode) => {
-            console.log(`Client attempting to join game: ${gameCode}`);
-            console.log('Join game details:', {
-                  socketId: socket.id,
-                  gameCode,
-                  time: new Date().toISOString(),
-            });
+            console.log(`Client ${socket.id} is joining game: ${gameCode}`);
 
-            const gameRoom = gameRooms.get(gameCode);
-
-            if (!gameRoom) {
-                  // Game doesn't exist
+            // Check if game exists
+            if (!gameRooms.has(gameCode)) {
                   socket.emit('error', { message: 'Game not found' });
                   return;
             }
 
-            // Log all current game rooms for debugging
-            console.log('Current game rooms:', [...gameRooms.entries()]);
+            const gameRoom = gameRooms.get(gameCode);
 
-            // Check if this is a reconnection
-            const isReconnectingClient = gameRoom.clientId && gameRoom.clientDisconnected;
-            const isReconnectingHost = gameRoom.hostId && gameRoom.hostDisconnected;
-
-            // If the client is reconnecting, update their socket ID
-            if (isReconnectingClient) {
-                  console.log(`Client ${socket.id} is reconnecting to game ${gameCode}`);
-                  gameRoom.clientId = socket.id;
-                  gameRoom.clientDisconnected = false;
-            }
-            // If the host is reconnecting, update their socket ID
-            else if (isReconnectingHost) {
-                  console.log(`Host ${socket.id} is reconnecting to game ${gameCode}`);
-                  gameRoom.hostId = socket.id;
-                  gameRoom.hostDisconnected = false;
-            }
-            // If this is a new client joining
-            else if (gameRoom.status === 'waiting') {
-                  console.log(`New client ${socket.id} is joining game ${gameCode}`);
-                  // Update the game room
-                  gameRoom.clientId = socket.id;
-                  gameRoom.status = 'ready';
-            } else {
-                  // Game already has two players and this is not a reconnection
-                  socket.emit('error', { message: 'Game is full or already started' });
+            // Check if game is joinable
+            if (gameRoom.state !== GAME_STATES.SETUP) {
+                  socket.emit('error', { message: 'Game already in progress' });
                   return;
             }
 
-            // Join the client to the game room
+            // Join the socket to the game room
             socket.join(gameCode);
 
-            // Notify the client that they've joined the game
+            // Notify the client
             socket.emit('game-joined', { gameCode });
 
-            // Notify both players that the game is ready
-            io.to(gameCode).emit('game-ready', { gameCode });
+            // Notify all clients in the room that a new player has joined
+            io.to(gameCode).emit('client-joined', { clientId: socket.id });
 
-            // If the game is already in the STARTED state, immediately send the start_game event to the client
-            if (gameRoom.state === GAME_STATES.STARTED) {
-                  console.log(`Game ${gameCode} already started, sending start_game event to new client`);
-                  socket.emit('start_game');
-            }
-
-            // If the game is already in the PLAYING state, immediately send the battle_start event to the client
-            if (gameRoom.state === GAME_STATES.PLAYING) {
-                  console.log(`Game ${gameCode} already in battle, sending battle_start event to new client`);
-                  socket.emit('battle_start');
-            }
+            console.log(`Client ${socket.id} joined game ${gameCode}`);
       });
 
-      // Handle game data exchange
+      // Handle game-data event
       socket.on('game-data', (data) => {
-            const { gameCode, ...gameData } = data;
+            const { gameCode } = data;
 
-            console.log('Received game data:', data);
-
-            // Special handling for start_game event
-            if (gameData.type === 'start_game') {
-                  console.log('Received start_game event, broadcasting to room:', gameCode);
-
-                  // Update the game state
-                  const gameRoom = gameRooms.get(gameCode);
-                  if (gameRoom) {
-                        // Only update state if not already started
-                        if (gameRoom.state !== GAME_STATES.STARTED) {
-                              gameRoom.state = GAME_STATES.STARTED;
-                              console.log(`Game ${gameCode} state updated to: ${gameRoom.state}`);
-
-                              // Broadcast the start_game event to all clients in the room
-                              io.to(gameCode).emit('start_game');
-                        } else {
-                              console.log(`Game ${gameCode} already in STARTED state, ignoring duplicate start_game event`);
-                        }
-                  }
+            // Check if game exists
+            if (!gameRooms.has(gameCode)) {
+                  socket.emit('error', { message: 'Game not found' });
                   return;
             }
 
-            // Special handling for ready_to_battle event
-            if (gameData.type === 'ready_to_battle') {
-                  console.log('Received ready_to_battle event from:', socket.id);
+            const gameRoom = gameRooms.get(gameCode);
 
-                  // Update the game room to track which players are ready
-                  const gameRoom = gameRooms.get(gameCode);
-                  if (gameRoom) {
-                        // Initialize the readyPlayers array if it doesn't exist
-                        if (!gameRoom.readyPlayers) {
-                              gameRoom.readyPlayers = [];
-                        }
-
-                        // Add this player to the ready players if not already there
-                        if (!gameRoom.readyPlayers.includes(socket.id)) {
-                              gameRoom.readyPlayers.push(socket.id);
-                              console.log(`Player ${socket.id} marked as ready in game ${gameCode}`);
-                        } else {
-                              console.log(`Player ${socket.id} already marked as ready in game ${gameCode}`);
-                              // If the player is already ready, just return without further processing
-                              return;
-                        }
-
-                        // Log the ready players and their IDs for debugging
-                        console.log(
-                              `Game ${gameCode} ready players: ${gameRoom.readyPlayers.length}/${gameRoom.clientId ? 2 : 1}`
-                        );
-                        console.log(`Ready players: ${JSON.stringify(gameRoom.readyPlayers)}`);
-                        console.log(`Host ID: ${gameRoom.hostId}, Client ID: ${gameRoom.clientId}`);
-
-                        // Check if both the host and client are ready
-                        const hostReady = gameRoom.readyPlayers.includes(gameRoom.hostId);
-                        const clientReady = gameRoom.clientId && gameRoom.readyPlayers.includes(gameRoom.clientId);
-
-                        console.log(`Host ready: ${hostReady}, Client ready: ${clientReady}`);
-
-                        // If both players are ready, update the game state and notify all players
-                        if (hostReady && clientReady && gameRoom.state !== GAME_STATES.PLAYING) {
-                              gameRoom.state = GAME_STATES.PLAYING;
-                              console.log(`Game ${gameCode} state updated to: ${gameRoom.state}`);
-
-                              // Broadcast the battle_start event to all clients in the room
-                              io.to(gameCode).emit('battle_start');
-                        }
+            // Special handling for client_info event
+            if (data.type === 'client_info') {
+                  const { clientId, isHost } = data;
+                  
+                  // Add or update client in the game room
+                  gameRoom.clients[clientId] = {
+                        id: clientId,
+                        socketId: socket.id,
+                        isHost,
+                        ready: false,
+                  };
+                  
+                  // Add to client order if not already there
+                  if (!gameRoom.clientOrder.includes(clientId)) {
+                        gameRoom.clientOrder.push(clientId);
                   }
-
+                  
+                  // Broadcast client info to all clients in the room
+                  socket.to(gameCode).emit('game-data', data);
+                  
+                  // If this is the first client and they're the host, update game state
+                  if (Object.keys(gameRoom.clients).length === 1 && isHost) {
+                        gameRoom.state = GAME_STATES.PLACEMENT;
+                        
+                        // Notify all clients of the state change
+                        io.to(gameCode).emit('game-data', {
+                              type: 'game_state_change',
+                              gameCode,
+                              state: GAME_STATES.PLACEMENT,
+                        });
+                  }
+                  
                   return;
             }
-
-            // Forward the game data to all players in the room except the sender
-            socket.to(gameCode).emit('game-data', gameData);
+            
+            // Special handling for client_ready event
+            if (data.type === 'client_ready') {
+                  const { clientId, ready } = data;
+                  
+                  // Update client ready status
+                  if (gameRoom.clients[clientId]) {
+                        gameRoom.clients[clientId].ready = ready;
+                  }
+                  
+                  // Broadcast to all clients in the room
+                  socket.to(gameCode).emit('game-data', data);
+                  
+                  // Check if all clients are ready
+                  const allReady = Object.values(gameRoom.clients).every(client => client.ready);
+                  
+                  if (allReady && gameRoom.state === GAME_STATES.PLACEMENT) {
+                        // All clients are ready for battle
+                        console.log(`All clients in game ${gameCode} are ready for battle`);
+                        
+                        // Let the host handle the state change
+                        // The host will send a game_state_change event
+                  }
+                  
+                  return;
+            }
+            
+            // Special handling for game_state_change event
+            if (data.type === 'game_state_change') {
+                  const { state, clientOrder, currentTurnIndex } = data;
+                  
+                  // Update game room state
+                  gameRoom.state = state;
+                  
+                  // Update client order if provided
+                  if (clientOrder) {
+                        gameRoom.clientOrder = clientOrder;
+                  }
+                  
+                  // Update current turn if provided
+                  if (currentTurnIndex !== undefined) {
+                        gameRoom.currentTurnIndex = currentTurnIndex;
+                  }
+                  
+                  // Broadcast to all clients in the room
+                  socket.to(gameCode).emit('game-data', data);
+                  
+                  return;
+            }
+            
+            // Special handling for attack event
+            if (data.type === 'attack') {
+                  const { fromClientId, toClientId } = data;
+                  
+                  // Forward the attack to the target client
+                  const targetClient = gameRoom.clients[toClientId];
+                  
+                  if (targetClient) {
+                        io.to(targetClient.socketId).emit('game-data', data);
+                  }
+                  
+                  return;
+            }
+            
+            // Special handling for attack_result event
+            if (data.type === 'attack_result') {
+                  const { fromClientId, toClientId } = data;
+                  
+                  // Forward the result to the attacking client
+                  const sourceClient = gameRoom.clients[toClientId];
+                  
+                  if (sourceClient) {
+                        io.to(sourceClient.socketId).emit('game-data', data);
+                  }
+                  
+                  return;
+            }
+            
+            // Special handling for game_over event
+            if (data.type === 'game_over') {
+                  // Update game room state
+                  gameRoom.state = GAME_STATES.FINISHED;
+                  
+                  // Broadcast to all clients in the room
+                  socket.to(gameCode).emit('game-data', data);
+                  
+                  return;
+            }
+            
+            // For all other game-data events, just forward to all other clients in the room
+            socket.to(gameCode).emit('game-data', data);
       });
 
-      // Handle player disconnection
+      // Handle heartbeat event
+      socket.on('heartbeat', () => {
+            socket.emit('heartbeat-ack');
+      });
+
+      // Handle disconnect event
       socket.on('disconnect', () => {
-            console.log(`User disconnected: ${socket.id}`);
+            console.log('Client disconnected:', socket.id);
 
-            // Find any game rooms where this socket is a player
-            for (const [gameCode, room] of gameRooms.entries()) {
-                  if (room.hostId === socket.id || room.clientId === socket.id) {
-                        // Notify the other player that their opponent disconnected
-                        socket.to(gameCode).emit('opponent-disconnected');
-
-                        // Instead of immediately removing the game room, mark the player as disconnected
-                        // This allows them to reconnect within a certain time window
-                        if (room.hostId === socket.id) {
-                              room.hostDisconnected = true;
-                              console.log(`Host disconnected from game ${gameCode}`);
-                        } else if (room.clientId === socket.id) {
-                              room.clientDisconnected = true;
-                              console.log(`Client disconnected from game ${gameCode}`);
+            // Find all game rooms this socket is in
+            for (const [gameCode, gameRoom] of gameRooms.entries()) {
+                  // Find the client ID for this socket
+                  const clientId = Object.keys(gameRoom.clients).find(
+                        id => gameRoom.clients[id].socketId === socket.id
+                  );
+                  
+                  if (clientId) {
+                        // Remove the client from the game room
+                        delete gameRoom.clients[clientId];
+                        
+                        // Remove from client order
+                        gameRoom.clientOrder = gameRoom.clientOrder.filter(id => id !== clientId);
+                        
+                        // Adjust current turn if needed
+                        if (gameRoom.currentTurnIndex >= gameRoom.clientOrder.length) {
+                              gameRoom.currentTurnIndex = 0;
                         }
-
-                        // If both players are disconnected, or if it's been more than 5 minutes since creation,
-                        // then remove the game room
-                        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-                        if (
-                              (room.hostDisconnected && room.clientDisconnected) ||
-                              (room.createdAt && room.createdAt < fiveMinutesAgo)
-                        ) {
+                        
+                        // Notify all clients in the room
+                        io.to(gameCode).emit('game-data', {
+                              type: 'client_left',
+                              gameCode,
+                              clientId,
+                        });
+                        
+                        // If no clients left, remove the game room
+                        if (Object.keys(gameRoom.clients).length === 0) {
                               gameRooms.delete(gameCode);
-                              console.log(`Game ${gameCode} ended due to player disconnection`);
-                        } else {
-                              // Log the current state of the game room
-                              console.log(`Game ${gameCode} waiting for reconnection:`, {
-                                    hostId: room.hostId,
-                                    clientId: room.clientId,
-                                    hostDisconnected: room.hostDisconnected,
-                                    clientDisconnected: room.clientDisconnected,
-                                    state: room.state,
+                              console.log(`Game ${gameCode} removed (no clients left)`);
+                        }
+                        // If game is in battle and only one client left, game over
+                        else if (gameRoom.state === GAME_STATES.BATTLE && Object.keys(gameRoom.clients).length === 1) {
+                              const winnerId = Object.keys(gameRoom.clients)[0];
+                              
+                              // Update game state
+                              gameRoom.state = GAME_STATES.FINISHED;
+                              
+                              // Notify the remaining client
+                              io.to(gameCode).emit('game-data', {
+                                    type: 'game_over',
+                                    gameCode,
+                                    winnerId,
                               });
                         }
                   }
             }
       });
-
-      // Handle heartbeats to keep the connection alive
-      socket.on('heartbeat', () => {
-            socket.emit('heartbeat-ack');
-      });
-});
-
-// Health check endpoint
-app.get('/', (_, res) => {
-      res.send('Battleship Game Server is running');
-});
-
-// Serve the test HTML file
-app.get('/test', (_, res) => {
-      res.sendFile(__dirname + '/test.html');
-});
-
-// Serve the CORS test HTML file
-app.get('/test-cors', (_, res) => {
-      res.sendFile(__dirname + '/test-cors.html');
 });
 
 // Start the server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
 });
+
+// Export for testing
+module.exports = { app, server, io };
