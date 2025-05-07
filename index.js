@@ -68,12 +68,16 @@ io.on('connection', (socket) => {
                   time: new Date().toISOString(),
             });
 
-            // Create a new game room
+            // Create a new game room with all necessary properties
             gameRooms.set(gameCode, {
                   hostId: socket.id,
                   clientId: null,
                   status: 'waiting',
                   state: GAME_STATES.WAITING,
+                  createdAt: new Date(),
+                  hostDisconnected: false,
+                  clientDisconnected: false,
+                  readyPlayers: [],
             });
 
             // Join the socket to the game room
@@ -81,6 +85,9 @@ io.on('connection', (socket) => {
 
             // Confirm game creation to the host
             socket.emit('game-created', { gameCode });
+
+            // Log the current state of all game rooms
+            console.log('Current game rooms after creation:', [...gameRooms.entries()]);
       });
 
       // Client joins an existing game
@@ -100,11 +107,33 @@ io.on('connection', (socket) => {
                   return;
             }
 
-            // log all game rooms with its state
+            // Log all current game rooms for debugging
             console.log('Current game rooms:', [...gameRooms.entries()]);
 
-            if (gameRoom.status !== 'waiting') {
-                  // Game already has two players
+            // Check if this is a reconnection
+            const isReconnectingClient = gameRoom.clientId && gameRoom.clientDisconnected;
+            const isReconnectingHost = gameRoom.hostId && gameRoom.hostDisconnected;
+
+            // If the client is reconnecting, update their socket ID
+            if (isReconnectingClient) {
+                  console.log(`Client ${socket.id} is reconnecting to game ${gameCode}`);
+                  gameRoom.clientId = socket.id;
+                  gameRoom.clientDisconnected = false;
+            }
+            // If the host is reconnecting, update their socket ID
+            else if (isReconnectingHost) {
+                  console.log(`Host ${socket.id} is reconnecting to game ${gameCode}`);
+                  gameRoom.hostId = socket.id;
+                  gameRoom.hostDisconnected = false;
+            }
+            // If this is a new client joining
+            else if (gameRoom.status === 'waiting') {
+                  console.log(`New client ${socket.id} is joining game ${gameCode}`);
+                  // Update the game room
+                  gameRoom.clientId = socket.id;
+                  gameRoom.status = 'ready';
+            } else {
+                  // Game already has two players and this is not a reconnection
                   socket.emit('error', { message: 'Game is full or already started' });
                   return;
             }
@@ -112,18 +141,22 @@ io.on('connection', (socket) => {
             // Join the client to the game room
             socket.join(gameCode);
 
-            // Update the game room
-            gameRoom.clientId = socket.id;
-            gameRoom.status = 'ready';
+            // Notify the client that they've joined the game
+            socket.emit('game-joined', { gameCode });
 
             // Notify both players that the game is ready
-            socket.emit('game-joined', { gameCode });
             io.to(gameCode).emit('game-ready', { gameCode });
 
             // If the game is already in the STARTED state, immediately send the start_game event to the client
             if (gameRoom.state === GAME_STATES.STARTED) {
                   console.log(`Game ${gameCode} already started, sending start_game event to new client`);
                   socket.emit('start_game');
+            }
+
+            // If the game is already in the PLAYING state, immediately send the battle_start event to the client
+            if (gameRoom.state === GAME_STATES.PLAYING) {
+                  console.log(`Game ${gameCode} already in battle, sending battle_start event to new client`);
+                  socket.emit('battle_start');
             }
       });
 
@@ -197,10 +230,35 @@ io.on('connection', (socket) => {
                         // Notify the other player that their opponent disconnected
                         socket.to(gameCode).emit('opponent-disconnected');
 
-                        // Remove the game room
-                        gameRooms.delete(gameCode);
+                        // Instead of immediately removing the game room, mark the player as disconnected
+                        // This allows them to reconnect within a certain time window
+                        if (room.hostId === socket.id) {
+                              room.hostDisconnected = true;
+                              console.log(`Host disconnected from game ${gameCode}`);
+                        } else if (room.clientId === socket.id) {
+                              room.clientDisconnected = true;
+                              console.log(`Client disconnected from game ${gameCode}`);
+                        }
 
-                        console.log(`Game ${gameCode} ended due to player disconnection`);
+                        // If both players are disconnected, or if it's been more than 5 minutes since creation,
+                        // then remove the game room
+                        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+                        if (
+                              (room.hostDisconnected && room.clientDisconnected) ||
+                              (room.createdAt && room.createdAt < fiveMinutesAgo)
+                        ) {
+                              gameRooms.delete(gameCode);
+                              console.log(`Game ${gameCode} ended due to player disconnection`);
+                        } else {
+                              // Log the current state of the game room
+                              console.log(`Game ${gameCode} waiting for reconnection:`, {
+                                    hostId: room.hostId,
+                                    clientId: room.clientId,
+                                    hostDisconnected: room.hostDisconnected,
+                                    clientDisconnected: room.clientDisconnected,
+                                    state: room.state,
+                              });
+                        }
                   }
             }
       });
