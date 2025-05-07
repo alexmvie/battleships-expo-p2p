@@ -100,6 +100,9 @@ io.on('connection', (socket) => {
                   return;
             }
 
+            // log all game rooms with its state
+            console.log('Current game rooms:', [...gameRooms.entries()]);
+
             if (gameRoom.status !== 'waiting') {
                   // Game already has two players
                   socket.emit('error', { message: 'Game is full or already started' });
