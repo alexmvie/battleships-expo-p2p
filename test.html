@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Socket.io Test</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const log = function(message) {
+        const logElement = document.getElementById('log');
+        logElement.innerHTML += message + '<br>';
+        console.log(message);
+      };
+
+      log('Initializing...');
+
+      try {
+        const socket = io('http://localhost:3000', {
+          transports: ['websocket', 'polling'],
+          reconnection: true,
+          reconnectionAttempts: 5,
+          reconnectionDelay: 1000,
+          reconnectionDelayMax: 5000,
+          timeout: 20000,
+        });
+
+        log('Socket object created');
+
+        socket.on('connect', function() {
+          log('Connected to server with ID: ' + socket.id);
+          
+          document.getElementById('createGame').addEventListener('click', function() {
+            const gameCode = document.getElementById('gameCode').value || 'TEST123';
+            log('Creating game with code: ' + gameCode);
+            socket.emit('create-game', gameCode);
+          });
+          
+          document.getElementById('joinGame').addEventListener('click', function() {
+            const gameCode = document.getElementById('gameCode').value || 'TEST123';
+            log('Joining game with code: ' + gameCode);
+            socket.emit('join-game', gameCode);
+          });
+        });
+
+        socket.on('connect_error', function(error) {
+          log('Connection error: ' + error);
+          log('Error message: ' + error.message);
+        });
+
+        socket.on('disconnect', function(reason) {
+          log('Disconnected from server: ' + reason);
+        });
+
+        socket.on('error', function(error) {
+          log('Server error: ' + error);
+        });
+
+        socket.on('game-created', function(data) {
+          log('Game created: ' + data.gameCode);
+        });
+
+        socket.on('game-joined', function(data) {
+          log('Game joined: ' + data.gameCode);
+        });
+
+        socket.on('game-ready', function(data) {
+          log('Game ready: ' + data.gameCode);
+        });
+
+        socket.on('opponent-disconnected', function() {
+          log('Opponent disconnected');
+        });
+      } catch (error) {
+        log('Error initializing socket: ' + error);
+        log('Error stack: ' + error.stack);
+      }
+    });
+  </script>
+</head>
+<body>
+  <h1>Socket.io Test</h1>
+  <div>
+    <input type="text" id="gameCode" placeholder="Game Code" value="TEST123">
+    <button id="createGame">Create Game</button>
+    <button id="joinGame">Join Game</button>
+  </div>
+  <div id="log" style="margin-top: 20px; border: 1px solid #ccc; padding: 10px; height: 300px; overflow-y: auto;"></div>
+</body>
+</html>
